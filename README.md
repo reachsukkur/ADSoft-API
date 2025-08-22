@@ -186,6 +186,175 @@ New-NetFirewallRule -DisplayName "ADSoft API HTTP" -Direction Inbound -LocalPort
 New-NetFirewallRule -DisplayName "ADSoft API HTTPS" -Direction Inbound -LocalPort 5001 -Protocol TCP -Action Allow
 ```
 
+### SSL Certificate Configuration for Production
+
+For production deployment at client sites, you'll need to configure SSL certificates for HTTPS. Here are the different approaches:
+
+#### Option 1: Using a Valid Domain Certificate
+
+1. **Obtain a Certificate**:
+   - Purchase from a Certificate Authority (CA) like Let's Encrypt, DigiCert, or GoDaddy
+   - Ensure the certificate matches your domain name
+
+2. **Install Certificate in Windows Certificate Store**:
+   ```powershell
+   # Import certificate to Local Machine Personal store
+   Import-PfxCertificate -FilePath "C:\path\to\certificate.pfx" -CertStoreLocation Cert:\LocalMachine\My -Password (ConvertTo-SecureString "certificate-password" -AsPlainText -Force)
+   ```
+
+3. **Configure Certificate in appsettings.json**:
+   ```json
+   {
+     "Kestrel": {
+       "Endpoints": {
+         "Http": {
+           "Url": "http://0.0.0.0:5000"
+         },
+         "Https": {
+           "Url": "https://0.0.0.0:5001",
+           "Certificate": {
+             "Subject": "your-domain.com",
+             "Store": "My",
+             "Location": "LocalMachine",
+             "AllowInvalid": false
+           }
+         }
+       }
+     }
+   }
+   ```
+
+#### Option 2: Using Certificate File with Password
+
+If you have a .pfx certificate file:
+
+```json
+{
+  "Kestrel": {
+    "Endpoints": {
+      "Http": {
+        "Url": "http://0.0.0.0:5000"
+      },
+      "Https": {
+        "Url": "https://0.0.0.0:5001",
+        "Certificate": {
+          "Path": "C:\\certificates\\your-certificate.pfx",
+          "Password": "your-certificate-password"
+        }
+      }
+    }
+  }
+}
+```
+
+#### Option 3: Self-Signed Certificate for Internal Use
+
+For internal client networks where you can't get a domain certificate:
+
+1. **Generate Self-Signed Certificate**:
+   ```powershell
+   # Create self-signed certificate
+   $cert = New-SelfSignedCertificate -DnsName "api.company.local", "192.168.1.100" -CertStoreLocation "cert:\LocalMachine\My" -NotAfter (Get-Date).AddYears(2)
+   
+   # Export certificate for client trust
+   Export-Certificate -Cert $cert -FilePath "C:\certificates\api-cert.crt"
+   
+   # Export with private key for server use
+   $password = ConvertTo-SecureString "YourPassword123!" -AsPlainText -Force
+   Export-PfxCertificate -Cert $cert -FilePath "C:\certificates\api-cert.pfx" -Password $password
+   ```
+
+2. **Configure in appsettings.json**:
+   ```json
+   {
+     "Kestrel": {
+       "Endpoints": {
+         "Http": {
+           "Url": "http://0.0.0.0:5000"
+         },
+         "Https": {
+           "Url": "https://0.0.0.0:5001",
+           "Certificate": {
+             "Path": "C:\\certificates\\api-cert.pfx",
+             "Password": "YourPassword123!"
+           }
+         }
+       }
+     }
+   }
+   ```
+
+3. **Install Certificate on Client Machines**:
+   ```powershell
+   # Install the certificate as trusted root on client machines
+   Import-Certificate -FilePath "C:\certificates\api-cert.crt" -CertStoreLocation Cert:\LocalMachine\Root
+   ```
+
+#### Option 4: Let's Encrypt Free Certificate
+
+For public-facing APIs with domain names:
+
+1. **Install Certbot** or use ACME client
+2. **Generate Certificate**:
+   ```bash
+   certbot certonly --standalone -d your-api-domain.com
+   ```
+3. **Convert to PFX format**:
+   ```bash
+   openssl pkcs12 -export -out certificate.pfx -inkey privkey.pem -in cert.pem -certfile chain.pem
+   ```
+
+#### Certificate Deployment Script
+
+Create a PowerShell script for easy certificate deployment:
+
+```powershell
+# deploy-certificate.ps1
+param(
+    [string]$CertificatePath,
+    [string]$CertificatePassword,
+    [string]$ApiConfigPath = ".\appsettings.json"
+)
+
+# Import certificate
+$securePassword = ConvertTo-SecureString $CertificatePassword -AsPlainText -Force
+$cert = Import-PfxCertificate -FilePath $CertificatePath -CertStoreLocation Cert:\LocalMachine\My -Password $securePassword
+
+Write-Host "Certificate imported with thumbprint: $($cert.Thumbprint)"
+Write-Host "Update your appsettings.json with the certificate configuration."
+```
+
+#### Testing HTTPS Configuration
+
+After configuring certificates, test the HTTPS endpoint:
+
+```powershell
+# Test HTTPS endpoint
+Invoke-RestMethod -Uri "https://your-server:5001/api/auth/login" -Method GET -SkipCertificateCheck
+
+# Or use curl
+curl -k https://your-server:5001/swagger
+```
+
+#### Certificate Best Practices
+
+1. **Security**:
+   - Store certificate passwords securely (use Azure Key Vault, Windows Credential Manager, or environment variables)
+   - Use strong passwords for certificate files
+   - Regularly rotate certificates before expiration
+
+2. **Monitoring**:
+   - Set up certificate expiration monitoring
+   - Implement automated renewal for Let's Encrypt certificates
+
+3. **Backup**:
+   - Keep backup copies of certificates in secure storage
+   - Document certificate installation procedures
+
+4. **Access Control**:
+   - Limit file system permissions on certificate files
+   - Use service accounts with minimal required permissions
+
 ## Security Considerations
 
 - **Encryption**: All sensitive configuration data is encrypted using AES-256
